@@ -1,10 +1,28 @@
 import * as THREE from 'three'
 import mitt from 'mitt'
-import { extend, createRoot, ReconcilerRoot, Dpr, Size } from '@react-three/fiber'
+import { createRoot, Dpr, extend, ReconcilerRoot, Size } from '@react-three/fiber'
 import { DomEvent } from '@react-three/fiber/dist/declarations/src/core/events'
 import { createPointerEvents } from './events'
 
-export function render(children: React.ReactNode) {
+function turnStringIntoFunction(fn: string) {
+  return (new Function(fn))()
+}
+
+function transformProps(props: Record<string, any>, functionProps: Record<string, any> | null = null) {
+  if(!functionProps) {
+    functionProps = {}
+  }
+  for (let functionProp in functionProps) {
+    const fn = functionProps[functionProp]
+    if (typeof fn === 'string' && fn.startsWith("return ")) {
+      props[functionProp] = turnStringIntoFunction(fn)
+    }
+  }
+
+}
+
+
+export function render(children: ((props: Record<string, any>) => React.ReactNode) | React.ReactNode) {
   extend(THREE)
 
   let root: ReconcilerRoot<HTMLCanvasElement>
@@ -12,8 +30,11 @@ export function render(children: React.ReactNode) {
   let size: Size = { width: 0, height: 0, top: 0, left: 0, updateStyle: false }
   const emitter = mitt()
 
+  // noinspection JSConstantReassignment
   const handleInit = (payload: any) => {
-    const { props, drawingSurface: canvas, width, top, left, height, pixelRatio } = payload
+    const { props, functionProps, renderProps, drawingSurface: canvas, width, top, left, height, pixelRatio } = payload
+    transformProps(props, functionProps)
+
     try {
       // Unmount root if already mounted
       if (root) {
@@ -63,11 +84,18 @@ export function render(children: React.ReactNode) {
               },
             })
           }
+          props.onCreated(state)
         },
       })
 
       // Render children once
-      root.render(children)
+      if(typeof children === 'function') {
+        root.render(children(renderProps))
+      }else{
+        root.render(children)
+      }
+
+    postMessage({ type: 'ready' })
     } catch (e: any) {
       postMessage({ type: 'error', payload: e?.message })
     }
@@ -87,8 +115,21 @@ export function render(children: React.ReactNode) {
 
   const handleProps = (payload: any) => {
     if (!root) return
-    if (payload.dpr) dpr = payload.dpr
-    root.configure({ size, dpr, ...payload })
+    const {props, functionProps} = payload
+    transformProps(props, functionProps)
+    if (props.dpr) dpr = props.dpr
+
+    root.configure({ size, dpr, ...props })
+  }
+
+  const handleRenderProps = (payload: any) => {
+    if(!root) return;
+    if(typeof children !== 'function') return
+
+    const {  renderProps } = payload
+
+    // Render children once
+    root.render(children(renderProps))
   }
 
   const handlerMap = {
@@ -96,6 +137,7 @@ export function render(children: React.ReactNode) {
     init: handleInit,
     dom_events: handleEvents,
     props: handleProps,
+    renderProps: handleRenderProps,
   }
 
   self.onmessage = (event) => {

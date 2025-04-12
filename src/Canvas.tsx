@@ -17,41 +17,68 @@ export interface CanvasProps
   eventSource?: HTMLElement | React.MutableRefObject<HTMLElement>
   /** The event prefix that is cast into canvas pointer x/y events, default: "offset" */
   eventPrefix?: 'offset' | 'client' | 'page' | 'layer' | 'screen'
+
+  renderProps?: Record<string, any>
 }
 
 function isRefObject<T>(ref: any): ref is React.MutableRefObject<T> {
   return ref && ref.current !== undefined
 }
 
-export function Canvas({ eventSource, worker, fallback, style, className, id, ...props }: CanvasProps) {
+
+function transformFunctionIntoString(fn: Function) {
+  return "return " + fn.toString();
+}
+
+
+
+export function Canvas({ eventSource, worker, fallback, style, className, id, renderProps, ...props }: CanvasProps) {
   const [shouldFallback, setFallback] = React.useState(false)
   const canvasRef = useRef<HTMLCanvasElement>(null!)
   const hasTransferredToOffscreen = useRef(false)
+  const [initialized, setInitialized] = React.useState(false)
+
+  function transformProps() {
+    let simpleProps : Record<any, any>= {}
+    let functionProps : Record<any, any> = { }
+    const anyProps = props as any
+    for (const prop in anyProps) {
+      if (typeof anyProps[prop] === 'function') {
+        functionProps[prop] = transformFunctionIntoString(anyProps[prop])
+      } else{
+        simpleProps[prop] = anyProps[prop]
+      }
+    }
+
+    return { props: simpleProps, functionProps }
+  }
 
   useEffect(() => {
     if (!worker) return
 
     const canvas = canvasRef.current
     try {
-      if (!hasTransferredToOffscreen.current) {
-        const offscreen = canvasRef.current.transferControlToOffscreen()
-        hasTransferredToOffscreen.current = true
-        worker.postMessage(
-          {
-            type: 'init',
-            payload: {
-              props,
-              drawingSurface: offscreen,
-              width: canvas.clientWidth,
-              height: canvas.clientHeight,
-              top: canvas.offsetTop,
-              left: canvas.offsetLeft,
-              pixelRatio: window.devicePixelRatio,
-            },
+      if (hasTransferredToOffscreen.current) return;
+      let offscreen = canvasRef.current.transferControlToOffscreen()
+
+      hasTransferredToOffscreen.current = true
+
+      worker.postMessage(
+        {
+          type: 'init',
+          payload: {
+            ...transformProps(),
+            drawingSurface: offscreen,
+            width: canvas.clientWidth,
+            height: canvas.clientHeight,
+            top: canvas.offsetTop,
+            left: canvas.offsetLeft,
+            pixelRatio: window.devicePixelRatio,
+            renderProps,
           },
-          [offscreen]
-        )
-      }
+        },
+        [offscreen]
+      )
     } catch (e) {
       // Browser doesn't support offscreen canvas at all
       setFallback(true)
@@ -62,6 +89,10 @@ export function Canvas({ eventSource, worker, fallback, style, className, id, ..
       if (e.data.type === 'error') {
         // Worker failed to initialize
         setFallback(true)
+      }
+      if (e.data.type === 'ready') {
+        // Worker initialized successfully
+        setInitialized(true)
       }
     }
 
@@ -131,7 +162,18 @@ export function Canvas({ eventSource, worker, fallback, style, className, id, ..
 
   useEffect(() => {
     if (!worker) return
-    worker.postMessage({ type: 'props', payload: props })
+    if(!initialized) return
+
+    worker.postMessage({ type: 'renderProps', payload: {
+        renderProps,
+      },
+    })
+  }, [worker, renderProps])
+
+
+  useEffect(() => {
+    if (!worker) return
+    worker.postMessage({ type: 'props', payload: transformProps() })
   }, [worker, props])
 
   return shouldFallback ? (
